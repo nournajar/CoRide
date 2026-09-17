@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Test paiement carte — CoRide</title>
+<script src="https://js.stripe.com/v3/"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 20px; }
+  h1 { font-size: 20px; }
+  label { display: block; font-size: 13px; margin: 14px 0 4px; color: #444; }
+  input { width: 100%; padding: 9px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; box-sizing: border-box; }
+  #card-element { padding: 11px; border: 1px solid #ccc; border-radius: 5px; }
+  button { margin-top: 20px; width: 100%; padding: 12px; background: #12583f; color: white; border: none; border-radius: 5px; font-size: 15px; cursor: pointer; }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  #result { margin-top: 16px; padding: 12px; border-radius: 5px; font-size: 14px; white-space: pre-wrap; }
+  #result.success { background: #e6f4ea; color: #1e7e34; }
+  #result.error { background: #fde8e8; color: #c1443c; }
+  .note { font-size: 12px; color: #888; margin-top: 24px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <h1>Test de paiement carte (Stripe)</h1>
+  <p style="font-size: 13px; color: #666;">
+    Cette page teste le circuit complet : création de réservation → PaymentIntent Stripe → confirmation carte.
+    Elle est indépendante de l'app principale pour l'instant.
+  </p>
+
+  <label>Email (compte déjà créé)</label>
+  <input type="email" id="email" placeholder="passager@coride.tn">
+
+  <label>Mot de passe</label>
+  <input type="password" id="password" placeholder="motdepasse123">
+
+  <label>ID du trajet à réserver</label>
+  <input type="text" id="trajetId" placeholder="Collez ici l'id du trajet">
+
+  <label>Nombre de places</label>
+  <input type="number" id="places" value="1" min="1">
+
+  <label>Carte bancaire</label>
+  <div id="card-element"></div>
+
+  <button id="pay-btn">Payer et réserver</button>
+
+  <div id="result" style="display:none;"></div>
+
+  <p class="note">
+    Utilisez un numéro de carte de test Stripe, par exemple <strong>4242 4242 4242 4242</strong>,
+    n'importe quelle date future et n'importe quel CVV. Aucune vraie carte n'est jamais utilisée en mode test.
+  </p>
+
+<script>
+const API_BASE = 'http://localhost:4000/api';
+let stripe, elements, cardElement;
+
+async function init() {
+  const configRes = await fetch(API_BASE + '/config');
+  const config = await configRes.json();
+
+  if (!config.stripePublishableKey || config.stripePublishableKey.includes('...')) {
+    showResult('error', "Clé publique Stripe manquante. Ajoute STRIPE_PUBLISHABLE_KEY dans le .env du serveur et redémarre-le.");
+    document.getElementById('pay-btn').disabled = true;
+    return;
+  }
+
+  stripe = Stripe(config.stripePublishableKey);
+  elements = stripe.elements();
+  cardElement = elements.create('card', { hidePostalCode: true });
+  cardElement.mount('#card-element');
+}
+
+function showResult(type, message) {
+  const el = document.getElementById('result');
+  el.style.display = 'block';
+  el.className = type;
+  el.textContent = message;
+}
+
+document.getElementById('pay-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('pay-btn');
+  btn.disabled = true;
+  showResult('success', 'Connexion...');
+
+  try {
+    // 1. Connexion pour obtenir un token
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const loginRes = await fetch(API_BASE + '/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const loginData = await loginRes.json();
+    if (!loginRes.ok) throw new Error(loginData.error);
+    const token = loginData.token;
+
+    // 2. Créer la réservation en mode CARTE → récupère le clientSecret Stripe
+    showResult('success', 'Création de la réservation...');
+    const trajetId = document.getElementById('trajetId').value.trim();
+    const places = parseInt(document.getElementById('places').value) || 1;
+
+    const resRes = await fetch(API_BASE + '/reservations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ trajetId, placesReservees: places, methodePaiement: 'CARTE' }),
+    });
+    const resData = await resRes.json();
+    if (!resRes.ok) throw new Error(resData.error);
+
+    if (!resData.clientSecret) throw new Error("Pas de clientSecret reçu — vérifie STRIPE_SECRET_KEY côté serveur.");
+
+    // 3. Confirmer le paiement avec Stripe Elements (carte saisie ci-dessus)
+    showResult('success', 'Confirmation du paiement...');
+    const { error, paymentIntent } = await stripe.confirmCardPayment(resData.clientSecret, {
+      payment_method: { card: cardElement },
+    });
+
+    if (error) throw new Error(error.message);
+
+    showResult('success',
+      'Paiement confirmé !' + String.fromCharCode(10) +
+      'Statut Stripe : ' + paymentIntent.status + String.fromCharCode(10) +
+      'Réservation : ' + resData.reservation.id + String.fromCharCode(10) + String.fromCharCode(10) +
+      "Note : le statut en base (table paiements) ne passera à PAID que lorsque le webhook Stripe sera configuré et recevra l'événement."
+    );
+  } catch (err) {
+    showResult('error', 'Erreur : ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+init();
+</script>
+</body>
+</html>

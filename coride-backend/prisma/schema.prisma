@@ -1,0 +1,154 @@
+// Schéma de base de données CoRide
+// PostgreSQL + extension PostGIS pour les recherches géographiques
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum PaymentMethod {
+  ESPECES
+  CARTE
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+  FAILED
+}
+
+model User {
+  id                String   @id @default(uuid())
+  email             String   @unique
+  passwordHash      String
+  nom               String
+  age               Int?
+  telephone         String?
+  photoUrl          String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Préférences conducteur
+  nonFumeur         Boolean  @default(false)
+  musique           Boolean  @default(false)
+  climatisation     Boolean  @default(false)
+  animauxAcceptes   Boolean  @default(false)
+
+  // Vérifications (jamais de fichier stocké en base, uniquement l'URL et le statut)
+  identiteUrl       String?
+  identiteStatus    VerificationStatus @default(PENDING)
+  permisUrl         String?
+  permisStatus      VerificationStatus @default(PENDING)
+
+  vehicule          Vehicule?
+  trajetsPublies    Trajet[]        @relation("TrajetsDuConducteur")
+  reservations      Reservation[]
+  messagesEnvoyes   Message[]       @relation("MessagesEnvoyes")
+
+  @@map("users")
+}
+
+model Vehicule {
+  id             String @id @default(uuid())
+  marque         String
+  modele         String
+  couleur        String
+  immatriculation String // jamais exposée publiquement dans les API publiques
+  placesTotal    Int
+
+  conducteur     User   @relation(fields: [conducteurId], references: [id], onDelete: Cascade)
+  conducteurId   String @unique
+
+  @@map("vehicules")
+}
+
+model Trajet {
+  id              String   @id @default(uuid())
+  villeDepart     String
+  villeArrivee    String
+  latDepart       Float
+  lngDepart       Float
+  latArrivee      Float
+  lngArrivee      Float
+  dateHeure       DateTime
+  prixParPlace    Decimal  @db.Decimal(10, 2)
+  placesDispo     Int
+  complet         Boolean  @default(false) // marqué "complet" manuellement par le conducteur
+  createdAt       DateTime @default(now())
+
+  conducteur      User     @relation("TrajetsDuConducteur", fields: [conducteurId], references: [id])
+  conducteurId    String
+
+  reservations    Reservation[]
+  messages        Message[]
+
+  @@map("trajets")
+  @@index([villeDepart, villeArrivee])
+  @@index([dateHeure])
+}
+
+model Reservation {
+  id              String            @id @default(uuid())
+  placesReservees Int
+  montantTotal    Decimal           @db.Decimal(10, 2)
+  statut          ReservationStatus @default(PENDING)
+  createdAt       DateTime          @default(now())
+
+  trajet          Trajet   @relation(fields: [trajetId], references: [id])
+  trajetId        String
+
+  passager        User     @relation(fields: [passagerId], references: [id])
+  passagerId      String
+
+  paiement        Paiement?
+
+  @@map("reservations")
+}
+
+model Paiement {
+  id              String        @id @default(uuid())
+  methode         PaymentMethod
+  statut          PaymentStatus @default(PENDING)
+  montant         Decimal       @db.Decimal(10, 2)
+  stripePaymentId String?       // référence Stripe si paiement par carte, jamais de données de carte en base
+  createdAt       DateTime      @default(now())
+
+  reservation     Reservation   @relation(fields: [reservationId], references: [id])
+  reservationId   String        @unique
+
+  @@map("paiements")
+}
+
+model Message {
+  id          String   @id @default(uuid())
+  contenu     String
+  createdAt   DateTime @default(now())
+
+  trajet      Trajet   @relation(fields: [trajetId], references: [id])
+  trajetId    String
+
+  expediteur  User     @relation("MessagesEnvoyes", fields: [expediteurId], references: [id])
+  expediteurId String
+
+  @@map("messages")
+  @@index([trajetId, createdAt])
+}
